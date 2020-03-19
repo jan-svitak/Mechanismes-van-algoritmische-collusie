@@ -1,0 +1,698 @@
+---
+title: "Contextual bandit algorithms"
+author: "Jan Sviták, Rob van der Noll"
+date: "January 28, 2020"
+output:
+  html_notebook:
+    highlight: tango
+    theme: cerulean
+    self_contained: yes
+    toc: yes
+---
+```{r packages, echo=FALSE, results='hide', warning=FALSE}
+library(tidyverse)
+library(gridExtra)
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(rsvg)
+library(neuralnet)
+library(ggalt)
+set.seed(666)
+```
+
+
+In this notebook we present our contextual bandit algorithms where we add information about the competitor's prices and let the firms make choices based on an estimated demand model.
+![](Fig2.png)
+
+As is the case with the UCB1-tuned algorithms, also the contextual bandit algorithms will estimate expected reward for each available option. In this case it fill be based on their estimate of demand. As we experiment with different model specifications, we denote the firm $i$'s estimate of expected profit as $\hat{\pi}_{pt} = \hat{f}(p, p_t^{-i})$. $\hat{f}$ is the estimated function dependent on own and competitor's prices.
+
+The index determining which arm will get pulled is thus straightforward:
+
+$$Q_p=\hat{\pi}_{pt}$$
+To facilitate exploration, we use an $\epsilon$-greedy strategy and let the firms choose a price randomly with probability $e^{-0.0002t}$. For each algorithm, we run 100 experiments of 20000 periods. The exploration probability decreases with time, so the change of choosing a random price is approximately 90% at the beginning of each experiment and 13% after 10000 periods. We start with an initialisation of 500 randomly chosen prices.
+
+We use two different demand specifications: neural network (deep contextual bandit) and linear regression (least squares contextual bandit)
+
+
+## Deep contextual bandit
+
+Our deep contextual bandits estimate a the expected rewards using a neural network with one hidden layer with two neurons and a logistic activation function and linear output:
+$$y(x) = b_2+\sum_{i=1}^2w_{2i}g\left(b_{1i}+w_{1i}\sum_{j=1}^{20}g\left(b_{0j}+w_{0j}x_j\right)\right)$$
+where $y$ is the expected profit as a function of $x$ containing information about the observed prices (20 dummy variables), $b_{lk}$ is the bias parameter for layer $l$ (0 = input, 1 = hidden, 2 = output) and input $k$ (neuron or element of input layer) and $w_{lk}$ is the weight parameter for layer $l$ and input $k$. The activation function $g()$ is specified as:
+$$g(x)=\dfrac{1}{1+e^{-x}}$$
+We define the activation and its derivative for later use.
+```{r logistic}
+#extract function from neuralnet package
+converted.fct <- neuralnet:::convert.activation.function("logistic")
+#separate functions for activation and derivative
+act.fct <- converted.fct$fct
+act.deriv.fct <- converted.fct$deriv.fct
+```
+
+We can visualize the network with a diagram:
+```{r net, results='hide'}
+net <- grViz("
+digraph boxes_and_circles {
+      
+      # a 'graph' statement
+      graph [overlap = true, fontsize = 10, layout = dot, rankdir = TB, ordering=out, ranksep = 2]
+      
+      # several 'node' statements
+      subgraph cluster1{
+        node [shape = box,
+        fontname = Helvetica]
+        'P1 = 0.1'; 'P1 = 0.2'; 'P1 = 0.3'; 'P1 = 0.4'; 'P1 = 0.5';
+        'P1 = 0.6'; 'P1 = 0.7'; 'P1 = 0.8'; 'P1 = 0.9'; 'P1 = 1.0'
+      }
+      subgraph cluster2{
+        node [shape = box,
+        fontname = Helvetica]
+        'P2 = 0.1'; 'P2 = 0.2'; 'P2 = 0.3'; 'P2 = 0.4'; 'P2 = 0.5';
+        'P2 = 0.6'; 'P2 = 0.7'; 'P2 = 0.8'; 'P2 = 0.9'; 'P2 = 1.0'
+      }
+
+      node [shape = diamond,
+      fontname = Helvetica, fontsize = 50, penwidth = 3]
+      'Winst'
+
+      node [shape = circle,
+      fontname = Helvetica, fontsize = 30, penwidth = 3]
+      'Neuron 1';'Neuron 2'
+      
+      # several 'edge' statements
+      'P1 = 0.1'->{'Neuron 1' 'Neuron 2'}
+      'P1 = 0.2'->{'Neuron 1' 'Neuron 2'}
+      'P1 = 0.3'->{'Neuron 1' 'Neuron 2'}
+      'P1 = 0.4'->{'Neuron 1' 'Neuron 2'}
+      'P1 = 0.5'->{'Neuron 1' 'Neuron 2'}
+      'P1 = 0.6'->{'Neuron 1' 'Neuron 2'}
+      'P1 = 0.7'->{'Neuron 1' 'Neuron 2'}
+      'P1 = 0.8'->{'Neuron 1' 'Neuron 2'}
+      'P1 = 0.9'->{'Neuron 1' 'Neuron 2'}
+      'P1 = 1.0'->{'Neuron 1' 'Neuron 2'}
+      'P2 = 0.1'->{'Neuron 1' 'Neuron 2'}
+      'P2 = 0.2'->{'Neuron 1' 'Neuron 2'}
+      'P2 = 0.3'->{'Neuron 1' 'Neuron 2'}
+      'P2 = 0.4'->{'Neuron 1' 'Neuron 2'}
+      'P2 = 0.5'->{'Neuron 1' 'Neuron 2'}
+      'P2 = 0.6'->{'Neuron 1' 'Neuron 2'}
+      'P2 = 0.7'->{'Neuron 1' 'Neuron 2'}
+      'P2 = 0.8'->{'Neuron 1' 'Neuron 2'}
+      'P2 = 0.9'->{'Neuron 1' 'Neuron 2'}
+      'P2 = 1.0'->{'Neuron 1' 'Neuron 2'}
+      'Neuron 1'->'Winst'
+      'Neuron 2'->'Winst'
+
+      edge[style=invisible, arrowhead=none]
+      'P1 = 0.1'->'P1 = 0.2'->'P1 = 0.3'->'P1 = 0.4'->'P1 = 0.5'->
+      'P1 = 0.6'->'P1 = 0.7'->'P1 = 0.8'->'P1 = 0.9'->'P1 = 1.0'->
+      'P2 = 0.1'->'P2 = 0.2'->'P2 = 0.3'->'P2 = 0.4'->'P2 = 0.5'->
+      'P2 = 0.6'->'P2 = 0.7'->'P2 = 0.8'->'P2 = 0.9'->'P2 = 1.0'
+
+      {rank=same;'P1 = 0.1'; 'P1 = 0.2'; 'P1 = 0.3'; 'P1 = 0.4'; 'P1 = 0.5';
+      'P1 = 0.6'; 'P1 = 0.7'; 'P1 = 0.8'; 'P1 = 0.9'; 'P1 = 1.0';'P2 = 0.1';
+      'P2 = 0.2'; 'P2 = 0.3'; 'P2 = 0.4'; 'P2 = 0.5';
+      'P2 = 0.6'; 'P2 = 0.7'; 'P2 = 0.8'; 'P2 = 0.9'; 'P2 = 1.0'}
+}
+      ")
+capture.output(rsvg_png(charToRaw(export_svg(net)), 'net.png', width = 862, height = 350))
+```
+
+![](net.png)
+
+The estimates for the weights and biases are found by minimizing the quadratic cost:
+$$\dfrac{1}{2n}\sum\|\pi-y(x)\|^2$$
+where $\pi$ is the observed profit and $y(x)$ the output of the neural network.
+
+We define the cost function and its derivative for later use:
+```{r sse}
+#extract the quadratic cost function from neuralnet package
+converted.fct <- neuralnet:::convert.error.function("sse")
+#separate functions for cost and its derivative
+err.fct <- converted.fct$fct
+err.deriv.fct <- converted.fct$deriv.fct
+```
+
+We use a standard backpropagation algorithm based on the derivatives of the cost function (and consequently the neurons) with respect to the weights and biases. The initial estimate of the neural network is based on the initialisation period with random price setting. After initialization, the weights and biases are updated each period using one backpropagation step based on the minibatch of 200 randomly chosen observations. The updates also depend on the learning rate. The higher the learning rate the higher the weight for the new value calculated using the latest backpropagation step.
+
+We proceed by writing the function carrying out the simulation:
+```{r sim}
+#inputs of the function are:
+#   vector of available prices (P),
+#   the intercept of the logit model (alpha)
+#   the price sensitivity parameter of the logit model (beta)
+#   learning rate for the backpropagation algorithm (lr)
+#   number of iterations in one experiment (N)
+#   number of experiments (MC)
+#   lenght of initialisation period (init)
+simulate_nn <- function(P, alpha, beta, lr, N, MC, init){
+  #collect prices
+  prices1 <- prices2 <- matrix(rep(NA, N*MC), N, MC)
+  #collect profits
+  profits1 <- profits2 <- matrix(rep(NA, N*MC), N, MC)
+  #collect resulting estimates of the network
+  models1 <- models2 <- list()
+  #collect resulting payoff matrices
+  Q1final <- Q2final <- list()
+  #loop over experiments
+  for (mc in 1:MC){
+    #initialize
+    #random pricing
+    prices1[1:init, mc] <- sample(P, init, replace = TRUE)
+    prices2[1:init, mc] <- sample(P, init, replace = TRUE)
+    #calculate profits
+    denom <- (1 + exp(alpha - beta * prices1[1:init, mc]) + exp(alpha - beta * prices2[1:init, mc]))
+    profits1[1:init, mc] <- prices1[1:init, mc]*exp(alpha - beta * prices1[1:init, mc])/denom
+    profits2[1:init, mc] <- prices2[1:init, mc]*exp(alpha - beta * prices2[1:init, mc])/denom
+    #create matrices with 20 columns indicating which prices are set in which period
+    X1 <- X2 <- matrix(0, init, 20)
+    for(i in 1:init){
+      X1[i,1:10] <- as.numeric(prices2[i, mc] == P)
+      X1[i,11:20] <- as.numeric(prices1[i, mc] == P)
+      X2[i,1:10] <- as.numeric(prices1[i, mc] == P)
+      X2[i,11:20] <- as.numeric(prices2[i, mc] == P)
+    }
+    #combine with profits as dependent variable
+    D1 <- as.data.frame(cbind(profits1[1:init, mc], X1))
+    D2 <- as.data.frame(cbind(profits2[1:init, mc], X2))
+    #estimate neural network with 2 neurons
+    model1 <- neuralnet(paste("V1 ~ ", paste(names(D1[2:21]), collapse = "+")), D1,
+                        hidden = c(2))
+    #estimate neural network with 2 neurons
+    model2 <- neuralnet(paste("V1 ~ ", paste(names(D2[2:21]), collapse = "+")), D2,
+                        hidden = c(2))
+    #calculate payoff matrix
+    Q1 <- Q2 <- matrix(rep(NA, 100), 10, 10)
+    #fill with predictions from neural network
+    for(j in 1:10){
+      newX <- cbind(matrix(0, 10, 10), diag(10))
+      newX[, j] <- 1
+      Q1[j,] <- predict(model1, newdata = newX)
+      Q2[j,] <- predict(model2, newdata = newX)
+    }
+    #loop over periods
+    for (t in (init + 1):N){
+      #exploration probability
+      eps <- exp(-0.0002*t)
+      #exploration decision firm 1
+      exp1 <- sample(c(0, 1), 1, prob = c(1-eps, eps))
+      #explore (random price)
+      if(exp1 == 1){
+        pull1 <- sample(P, 1)
+      }
+      #choose best reponse to competitor's price in previous period
+      else{
+        pull1 <- sample(P[which.max(Q1[prices2[t-1, mc]*10,])], 1)
+      }
+      #exploration decision firm 2
+      exp2 <- sample(c(0, 1), 1, prob = c(1-eps, eps))
+      #explore (random price)
+      if(exp2 == 1){
+        pull2 <- sample(P, 1)
+      }
+      #choose best reponse to competitor's price in previous period
+      else{
+        pull2 <- sample(P[which.max(Q2[prices1[t-1, mc]*10,])], 1)
+      }
+      #calculate rewards
+      reward1 <- pull1*exp(alpha - beta * pull1)/(1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2))
+      reward2 <- pull2*exp(alpha - beta * pull2)/(1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2))
+      #collect prices
+      prices1[t, mc] <- pull1
+      prices2[t, mc] <- pull2
+      #collect profits
+      profits1[t, mc] <- reward1
+      profits2[t, mc] <- reward2
+      #draw random periods for update of model (minibatch)
+      set1 <- sample((init + 1):t, min(t- init, 100))
+      set2 <- sample((init + 1):t, min(t- init, 100))
+      #construct input layer
+      X1 <- X2 <- matrix(0, length(set1), 20)
+      for(i in 1:length(set1)){
+        X1[i,1:10] <- as.numeric(prices2[set1 , mc][i] == P)
+        X1[i,11:20] <- as.numeric(prices1[set1, mc][i] == P)
+        X2[i,1:10] <- as.numeric(prices1[set2 , mc][i] == P)
+        X2[i,11:20] <- as.numeric(prices2[set2, mc][i] == P)
+      }
+      #output layer
+      y1 <- profits1[set1, mc]
+      y2 <- profits2[set2, mc]
+      #one backpropagation step for firm 1
+      r1 <- neuralnet:::rprop(weights = model1$weights[[1]], response = y1, covariate = cbind(intercept = 1, X1),
+                              threshold = 0.01, learningrate.factor = list(minus = 0.5, plus = 1.2),
+                              stepmax = 2, lifesign = "none", lifesign.step = 1000, act.fct = act.fct,
+                              act.deriv.fct = act.deriv.fct, err.fct = err.fct, err.deriv.fct = err.deriv.fct,
+                              algorithm = "backprop", linear.output = TRUE, exclude = NULL,
+                              learningrate.bp = lr/length(set1))
+      #one backpropagation step for firm 2
+      r2 <- neuralnet:::rprop(weights = model2$weights[[1]], response = y2, covariate = cbind(intercept = 1, X2),
+                              threshold = 0.01, learningrate.factor = list(minus = 0.5, plus = 1.2),
+                              stepmax = 2, lifesign = "none", lifesign.step = 1000, act.fct = act.fct,
+                              act.deriv.fct = act.deriv.fct, err.fct = err.fct, err.deriv.fct = err.deriv.fct,
+                              algorithm = "backprop", linear.output = TRUE, exclude = NULL,
+                              learningrate.bp = lr/length(set2))
+      #update weights and biases
+      model1$weights[[1]] <- r1$weights
+      model2$weights[[1]] <- r2$weights
+      #update payoff matrices
+      for(j in 1:10){
+        newX <- cbind(matrix(0, 10, 10), diag(10))
+        newX[, j] <- 1
+        Q1[j,] <- predict(model1, newdata = newX)
+        Q2[j,] <- predict(model2, newdata = newX)
+      }
+    }
+    #collect models
+    models1[[mc]] <- model1
+    models2[[mc]] <- model2
+    #collect final payoff matrices
+    Q1final[[mc]] <- Q1
+    Q2final[[mc]] <- Q2
+  }
+  #save results in the environment
+  prices1 <<- prices1
+  prices2 <<- prices2
+  profits1 <<- profits1
+  profits2 <<- profits2
+  models1 <<- models1
+  models2 <<- models2
+  Q1final <<- Q1final
+  Q2final <<- Q2final
+}
+```
+
+We run 100 experiments of 20000 periods with initialization of 500 periods and learning rate of 0.5.
+
+```{r run}
+#available prices
+P <- seq(0.1, 1, 0.1)
+#run
+simulate_nn(P = P, alpha = 5, beta = 5, lr = 0.5, N = 20000, MC = 100, init = 500)
+```
+
+We will inspect the average estimates of the expected payoff matrix at the end of the experiment. This matrix determines what the firms view as an optimal reaction.
+
+```{r pmat}
+#create data.frame with all combinations of prices
+P_matrix <- data.frame(x1 = rep(P, each = length(P)),
+                       x2 = rep(P, length(P)))
+#calculate average estimated payoff from all 100 experiments
+P_matrix$Qfinal <- as.vector(t(Reduce("+", Q1final) + Reduce("+", Q2final))/200)
+```
+
+Let's visualise the resulting expected payoff matrix:
+```{r matplot, results='hide'}
+#save as png
+png(filename="Fig6.png", width=900, height=700, pointsize = 12, res = 150)
+#start ggplot
+ggplot() +
+  #fill tiles according to estimated payoff
+  geom_tile(data = P_matrix, aes(x = x2, y = x1, fill = Qfinal)) +
+  #choose colour palette
+  scale_fill_distiller(palette = "RdYlBu") +
+  #add invisible layer to add optimal reaction to legend
+  geom_point(data = data.frame(x = 1, y = 1, t = "Optimale reactie"), aes(x = x, y = y, color = t), shape = NA) +
+  #set label and tickmarks y-axis
+  scale_y_continuous(
+    name = "Prijs van concurrent",
+    breaks = seq(0.1, 1, 0.1),
+    expand = c(0, 0)
+  ) +
+  #set label and tickmarks x-axis
+  scale_x_continuous(
+    name = "Beschikbare acties",
+    breaks = seq(0.1, 1, 0.1),
+    expand = c(0, 0)
+  ) +
+  #highlight optimal reactions
+  geom_encircle(data = data.frame(x1 = rep(c(0.99, 1.01), 2),
+                                  x2 = c(rep(0.69, 2), rep(0.71, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.89, 0.91), 2),
+                                  x2 = c(rep(0.59, 2), rep(0.61, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.79, 0.81), 2),
+                                  x2 = c(rep(0.59, 2), rep(0.61, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.69, 0.71), 2),
+                                  x2 = c(rep(0.49, 2), rep(0.51, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.59, 0.61), 2),
+                                  x2 = c(rep(0.49, 2), rep(0.51, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.49, 0.51), 2),
+                                  x2 = c(rep(0.39, 2), rep(0.41, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.39, 0.41), 2),
+                                  x2 = c(rep(0.39, 2), rep(0.41, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.29, 0.31), 2),
+                                  x2 = c(rep(0.39, 2), rep(0.41, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.19, 0.21), 2),
+                                  x2 = c(rep(0.29, 2), rep(0.31, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.09, 0.11), 2),
+                                  x2 = c(rep(0.29, 2), rep(0.31, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  #blank background
+  theme(panel.background = element_rect(fill = NA),
+        legend.key = element_blank()) +
+  #adjust labels
+  labs(fill = "Verwachte winst", color = "",
+       title = "Gemiddelde verwachte winst aan het einde van experiment") +
+  #adjust legend
+  guides(
+    #create legend key for optimal reactions
+    color = guide_legend(
+      override.aes = list(size = 10, stroke = 2, shape = 0, color = "green2"),
+      order = 2
+    ),
+    #color at the top
+    fill = guide_colourbar(order = 1)
+  )
+dev.off()
+```
+![](Fig6.png)
+
+Plot simulation results:
+We can see that the payoffs very closely follow the theoretical values based on the true demand.
+
+Let's also visualise the results from the simulations:
+```{r plot_nn, warning=FALSE, results='hide'}
+#load function
+load("plot.RData")
+#generate panels
+plot_sim(prices1, prices2, P)
+#construct left panel
+tmp <- ggplot_gtable(ggplot_build(g1))
+#identify element containing legend
+leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+#extract legend
+legend <- tmp$grobs[[leg]]
+```
+```{r fig, fig.height=3.8, fig.width=7, results='hide'}
+#arrange left and right panel with common legend underneath
+png(filename = "Fig7.png", width = 1200, height = 650, pointsize = 12, res = 150)
+grid.arrange(arrangeGrob(g1 + theme(legend.position = "none"),
+                         g2 + theme(legend.position = "none"), nrow = 1),
+             legend, nrow = 2, heights = c(10, 2))
+dev.off()
+```
+![](Fig7.png)
+
+
+We can see that both the estimated payoff matrix and the simulation results lead to the Bertrand-Nash equilibrium. This is not suprising given the mechanics of the one-shot game and the precise estimates of the expected profits.
+
+## Least squares contextual bandit
+
+The least squares contextual bandit algorithms estimate a linear demand model:
+$$d_i=a_i + b_i p_i + c_i p_{-i}$$
+where $d_i$ is the volume sold by firm $i$, $p_i$ is the price of firm $i$ and $p_{-i}$ is the prices of the other firm.
+
+The initial estimates of demand parameters are based on the initialisation period with random price setting. After initialization, the model is re-estimated every 500 periods using a minibatch of 500 randomly chosen observations.
+
+We proceed by writing the function carrying out the simulation:
+```{r ls_sim}
+#inputs of the function are:
+#   vector of available prices (P),
+#   the intercept of the logit model (alpha)
+#   the price sensitivity parameter of the logit model (beta)
+#   number of iterations in one experiment (N)
+#   number of experiments (MC)
+#   lenght of initialisation period (init)
+simulate_ls <- function(P, alpha, beta, N, MC, init){
+  #collect prices
+  prices1 <- matrix(rep(NA, N*MC), N, MC)
+  prices2 <- matrix(rep(NA, N*MC), N, MC)
+  #collect profits
+  profits1 <- matrix(rep(NA, N*MC), N, MC)
+  profits2 <- matrix(rep(NA, N*MC), N, MC)
+  #collect model estimates
+  models1 <- models2 <- list()
+  #loop over experiments
+  for (mc in 1:MC){
+    #initialize
+    pull1 <- sample(P, init, replace = TRUE)
+    pull2 <- sample(P, init, replace = TRUE)
+    #calculate profits
+    #denominator of logit demand function
+    denom <- 1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2)
+    #collect profits
+    profits1[1:init, mc] <- pull1*exp(alpha - beta * pull1)/denom
+    profits2[1:init, mc] <- pull2*exp(alpha - beta * pull2)/denom
+    #collect prices
+    prices1[1:init, mc] <- pull1
+    prices2[1:init, mc] <- pull2
+    #estimate linear demand
+    model1 <- lm(y ~ x1 + x2,
+                 data = data.frame(y = profits1[1:init, mc]/prices1[1:init, mc],
+                                   x1 = prices1[1:init, mc],
+                                   x2 = prices2[1:init, mc]))
+    model2 <- lm(y ~ x1 + x2,
+                 data = data.frame(y = profits2[1:init, mc]/prices2[1:init, mc],
+                                   x1 = prices2[1:init, mc],
+                                   x2 = prices1[1:init, mc]))
+    #loop over time periods
+    for (t in (init + 1):N){
+      #exploration probability
+      eps <- exp(-0.0002*t)
+      #expected payoffs based on the model estimates given competitor's last price
+      Q1 <- predict(model1, newdata = data.frame(x1 = P,
+                                                 x2 = rep(prices2[t - 1, mc], length(P))))*P
+      Q2 <- predict(model2, newdata = data.frame(x1 = P,
+                                                 x2 = rep(prices1[t - 1, mc], length(P))))*P
+      #exploration decision firm 1
+      exp1 <- sample(c(0, 1), 1, prob = c(1-eps, eps))
+      #explore (random price)
+      if(exp1 == 1){
+        pull1 <- sample(P, 1)
+      }
+      #choose best reponse
+      else{
+        pull1 <- sample(P[which.max(Q1)], 1)
+      }
+      #exploration decision firm 2
+      exp2 <- sample(c(0, 1), 1, prob = c(1-eps, eps))
+      #explore (random price)
+      if(exp2 == 1){
+        pull2 <- sample(P, 1)
+      }
+      #choose best response
+      else{
+        pull2 <- sample(P[which.max(Q2)], 1)
+      }
+      #calculate profits
+      reward1 <- pull1*exp(alpha - beta * pull1)/(1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2))
+      reward2 <- pull2*exp(alpha - beta * pull2)/(1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2))
+      #collect prices
+      prices1[t, mc] <- pull1
+      prices2[t, mc] <- pull2
+      #collect profits
+      profits1[t, mc] <- reward1
+      profits2[t, mc] <- reward2
+      #update model every 500 periods
+      if(t %% 500 == 0){
+        #set minibatch
+        set1 <- sample(1:t, 500)
+        set2 <- sample(1:t, 500)
+        #estimate linear model
+        model1 <- lm(y ~ x1 + x2,
+                     data = data.frame(y = profits1[set1, mc]/prices1[set1, mc],
+                                       x1 = prices1[set1, mc],
+                                       x2 = prices2[set1, mc]))
+        model2 <- lm(y ~ x1 + x2,
+                     data = data.frame(y = profits2[set2, mc]/prices2[set2, mc],
+                                       x1 = prices2[set2, mc],
+                                       x2 = prices1[set2, mc]))
+      }
+    }
+    #collect model estimates
+    models1[[mc]] <- model1
+    models2[[mc]] <- model2
+  }
+  #save results into the environment
+  prices1 <<- prices1
+  prices2 <<- prices2
+  profits1 <<- profits1
+  profits2 <<- profits2
+  models1 <<- models1
+  models2 <<- models2
+}
+```
+
+We run 100 experiments of 20000 periods with initialization of 500 periods.
+
+```{r run_ls}
+#run
+simulate_ls(P = P, alpha = 5, beta = 5, N = 20000, MC = 100, init = 500)
+```
+
+Calculate the average expected payoff matrix use by the least squares bandit algorithm at the end of the experiment.
+```{r payoff_ls, results='hide'}
+#add a column for the index values
+P_matrix$Q_ls <- 0
+#loop over experiments
+for(mc in 1:100){
+  #add the expected payoff estimate based on the model of firm 1
+  P_matrix$Q_ls <- P_matrix$Q_ls + predict(models1[[mc]],
+                                             newdata = data.frame(x1 = rep(P, length(P)),
+                                                                  x2 = rep(P, each = length(P))))*P/100
+  #add the expected payoff estimate based on the model of firm 2
+  P_matrix$Q_ls <- P_matrix$Q_ls + predict(models2[[mc]],
+                                             newdata = data.frame(x1 = rep(P, length(P)),
+                                                                  x2 = rep(P, each = length(P))))*P/100
+  
+}
+```
+
+Let's visualise the resulting expected payoff matrix:
+```{r fig8, results='hide'}
+#save as png
+png(filename="Fig8.png", width=900, height=700, pointsize = 12, res = 150)
+#start ggplot
+ggplot() +
+  #fill in tiles according to estimated payoffs
+  geom_tile(data = P_matrix, aes(x = x2, y = x1, fill = Q_ls)) +
+  #choose color palette
+  scale_fill_distiller(palette = "RdYlBu") +
+  #add invisible layer to add optimal reaction to legend
+  geom_point(data = data.frame(x = 1, y = 1, t = "Optimale reactie"), aes(x = x, y = y, color = t), shape = NA) +
+  #add invisible layer to add distinction between estimate/theory in the legend
+  geom_line(data = data.frame(x = rep(1, 2), y = rep(1, 2), t = c("Schatting", "Theorie")),
+            aes(x = x, y = y, lty = t)) +
+  #estimates solid line, theory dotted line
+  scale_linetype_manual(values = c(1, 3)) +
+  #set label and tick marks for y-axis
+  scale_y_continuous(
+    name = "Prijs van concurrent",
+    breaks = seq(0.1, 1, 0.1),
+    expand = c(0, 0)
+  ) +
+  #set label and tick marks for x-axis
+  scale_x_continuous(
+    name = "Beschikbare acties",
+    breaks = seq(0.1, 1, 0.1),
+    expand = c(0, 0)
+  ) +
+  #highlight optimal reactions
+  geom_encircle(data = data.frame(x1 = rep(c(0.99, 1.01), 2),
+                                  x2 = c(rep(0.69, 2), rep(0.71, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.89, 0.91), 2),
+                                  x2 = c(rep(0.69, 2), rep(0.71, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.79, 0.81), 2),
+                                  x2 = c(rep(0.59, 2), rep(0.61, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.69, 0.71), 2),
+                                  x2 = c(rep(0.59, 2), rep(0.61, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.59, 0.61), 2),
+                                  x2 = c(rep(0.59, 2), rep(0.61, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.49, 0.51), 2),
+                                  x2 = c(rep(0.49, 2), rep(0.51, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.39, 0.41), 2),
+                                  x2 = c(rep(0.49, 2), rep(0.51, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.29, 0.31), 2),
+                                  x2 = c(rep(0.39, 2), rep(0.41, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.19, 0.21), 2),
+                                  x2 = c(rep(0.39, 2), rep(0.41, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.09, 0.11), 2),
+                                  x2 = c(rep(0.29, 2), rep(0.31, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05) +
+  #highlight theoretical optimal reactions (where they deviate from estimates)
+  geom_encircle(data = data.frame(x1 = rep(c(0.89, 0.91), 2),
+                                  x2 = c(rep(0.59, 2), rep(0.61, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05, lty = 3) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.69, 0.71), 2),
+                                  x2 = c(rep(0.49, 2), rep(0.51, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05, lty = 3) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.59, 0.61), 2),
+                                  x2 = c(rep(0.49, 2), rep(0.51, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05, lty = 3) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.49, 0.51), 2),
+                                  x2 = c(rep(0.39, 2), rep(0.41, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05, lty = 3) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.39, 0.41), 2),
+                                  x2 = c(rep(0.39, 2), rep(0.41, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05, lty = 3) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.19, 0.21), 2),
+                                  x2 = c(rep(0.29, 2), rep(0.31, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9, size=3, expand = 0.05, lty = 3) +
+  #blank background
+  theme(panel.background = element_rect(fill = NA),
+        legend.key = element_blank()) +
+  #adjust labels
+  labs(fill = "Verwachte winst", color = "", lty = "",
+       title = "Gemiddelde verwachte winst aan het einde van experiment") +
+  #adjust legend
+  guides(
+    #create legend key for optimal reactions
+    color = guide_legend(
+      override.aes = list(size = 10, stroke = 2, shape = 0, color = "green2"),
+      order = 2
+    ),
+    #color at the top
+    fill = guide_colourbar(order = 1),
+    #legend for estimted/theoretical optimal reaction
+    linetype = guide_legend(
+      override.aes = list(lwd = 1, keywidth = unit(10,"cm"), color = "green2")
+    )
+  )
+dev.off()
+```
+
+![](Fig8.png)
+
+The misspecification of the linear demand model clearly lead to a shift in reaction functions of the firms.
+
+We will also look at the development of prices in the experiments:
+```{r plot_ls, warning=FALSE, results='hide'}
+#generate panels
+plot_sim(prices1, prices2, P)
+#legend the same as in case of deep contextual bandit
+```
+```{r fig9, fig.height=3.8, fig.width=7, results='hide'}
+#arrange left and right panel with common legend underneath
+png(filename = "Fig9.png", width = 1200, height = 650, pointsize = 12, res = 150)
+grid.arrange(arrangeGrob(g1 + theme(legend.position = "none"),
+                         g2 + theme(legend.position = "none"), nrow = 1),
+             legend, nrow = 2, heights = c(10, 2))
+dev.off()
+```
+
+![](Fig9.png)
+
+As we could expect from the expected payoff matrix, the firms converge to the prices of 0.5 or 0.6 which are both above the competitive level of 0.4.

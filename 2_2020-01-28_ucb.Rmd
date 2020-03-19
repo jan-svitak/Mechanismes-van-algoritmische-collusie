@@ -1,0 +1,591 @@
+---
+title: "UCB algorithms"
+author: "Jan Sviták, Rob van der Noll"
+date: "January 28, 2020"
+output:
+  html_notebook:
+    highlight: tango
+    theme: cerulean
+    self_contained: yes
+---
+```{r packages, echo=FALSE, results='hide', warning=FALSE}
+library(tidyverse)
+library(gridExtra)
+set.seed(666)
+```
+
+
+In this notebook we present the UCB1-tuned algorithm (Auer et al, 2002) and results from the simulations using this algorithm.
+
+The UCB (Upper confidence bound) algorithms are typical solutions to multi-armed bandit problems. They observe own choices and earned reward and learn to identify the best option.
+
+![](Fig1.png){ width=55% }
+
+They fall within a class of index algorithms, which make choices based on an index value calculated for each available option (arm). In case of the UCB1-tuned algorithm. The index has the following form and is updated at each period $T$
+
+$$Q_p=\bar{\pi}_p + \sqrt{\dfrac{\log{T}}{n_p}\min\left(\dfrac{1}{4},V_p\right)}$$
+$$V_p = \dfrac{1}{n}\sum_{t=1}^T \pi_{pt}^2 - \bar{\pi}_p^2 + \sqrt{\dfrac{2\log{T}}{n_p}}$$
+where $\bar{\pi}_p$ is the mean profit for price $p$, $\pi_{pt}$ is the profit for price $p$ at period $t$ and $n_p$ is number of times price $p$ has been played so far.
+
+As we can see, $Q_p$ is based on the average profits for the price $p$ plus an exploration bonus. The exploration bonus leads the algorithm to experiment with arms with high variance in profits.
+
+We first define a function carrying out the choice of the price. It calculates the above index and chooses the price with the highest value.
+```{r pull_arm}
+#inputs for the function are:
+#   sum of profits for each arm (pi_sum),
+#   sum of squared profits for each arm (pi_sq_sum),
+#   number of times each arm has been pulled (Np),
+#   current period (t)
+pull_arm <- function(pi_sum, pi_sq_sum, Np, t){
+  #average squared profit
+  pi_sq_bar <- pi_sq_sum/Np
+  #average profit
+  pi_bar <- pi_sum/Np
+  #exploration bonus V
+  V <- pi_sq_bar - pi_bar^2 + 2*log(t)/Np
+  #quality index
+  Q <- pi_bar + sqrt(log(t)/Np*pmin(0.25, V))
+  #ties broken by random sampling
+  if(length(which.max(Q)) > 1){
+    sample(which.max(Q), 1)
+  }
+  #otherwise, arm with highest Q pulled
+  else{
+    which.max(Q)
+  }
+}
+```
+
+Next we define the function running the experiment
+```{r sim}
+#inputs of the function are:
+#   vector of available prices (P),
+#   the intercept of the logit model (alpha)
+#   the price sensitivity parameter of the logit model (beta)
+#   number of iterations in one experiment (N)
+#   number of experiments (MC)
+simulate <- function(P, alpha, beta, N, MC){
+  #collect prices
+  prices1 <- matrix(rep(NA, N*MC), N, MC)
+  prices2 <- matrix(rep(NA, N*MC), N, MC)
+  #collect profits
+  profits1 <- matrix(rep(NA, N*MC), N, MC)
+  profits2 <- matrix(rep(NA, N*MC), N, MC)
+  #loop over experiments
+  for (mc in 1:MC){
+    #sum of rewards
+    sum_rewards1 <- matrix(rep(0, length(P)))
+    sum_rewards2 <- matrix(rep(0, length(P)))
+    #sum of squared rewards
+    sum_rewards_sq1 <- matrix(rep(0, length(P)))
+    sum_rewards_sq2 <- matrix(rep(0, length(P)))
+    #number of times each armed pulled
+    Np1 <- matrix(rep(0, length(P)))
+    Np2 <- matrix(rep(0, length(P)))
+    #initialise (each price selected once, random order)
+    pull1 <- sample(P, length(P))
+    pull2 <- sample(P, length(P))
+    for (t in 1:length(P)){
+      #calculate profit
+      reward1 <- pull1[t]*exp(alpha - beta * pull1[t])/
+        (1 + exp(alpha - beta * pull1[t]) + exp(alpha - beta * pull2[t]))
+      reward2 <- pull2[t]*exp(alpha - beta * pull2[t])/
+        (1 + exp(alpha - beta * pull1[t]) + exp(alpha - beta * pull2[t]))
+      #sum of rewards
+      sum_rewards1[P == pull1[t]] <- sum_rewards1[P == pull1[t]] + reward1
+      sum_rewards2[P == pull2[t]] <- sum_rewards2[P == pull2[t]] + reward2
+      #sum of squared rewards
+      sum_rewards_sq1[P == pull1[t]] <- sum_rewards_sq1[P == pull1[t]] + reward1^2
+      sum_rewards_sq2[P == pull2[t]] <- sum_rewards_sq2[P == pull2[t]] + reward2^2
+      #number of times each armed pulled
+      Np1[P == pull1[t]] <- Np1[P == pull1[t]] + 1
+      Np2[P == pull2[t]] <- Np2[P == pull2[t]] + 1
+    }
+    #loop over periods
+    for (t in 1:N){
+      #choose prices based on the UCB-index
+      pull1 <- P[pull_arm(sum_rewards1, sum_rewards_sq1, Np1, t + length(P))]
+      pull2 <- P[pull_arm(sum_rewards2, sum_rewards_sq2, Np2, t + length(P))]
+      #calculate profit
+      reward1 <- pull1*exp(alpha - beta * pull1)/(1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2))
+      reward2 <- pull2*exp(alpha - beta * pull2)/(1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2))
+      #sum of rewards
+      sum_rewards1[P == pull1] <- sum_rewards1[P == pull1] + reward1
+      sum_rewards2[P == pull2] <- sum_rewards2[P == pull2] + reward2
+      #sum of squared rewards
+      sum_rewards_sq1[P == pull1] <- sum_rewards_sq1[P == pull1] + reward1^2
+      sum_rewards_sq2[P == pull2] <- sum_rewards_sq2[P == pull2] + reward2^2
+      #number of times each armed pulled
+      Np1[P == pull1] <- Np1[P == pull1] + 1
+      Np2[P == pull2] <- Np2[P == pull2] + 1
+      #collect prices
+      prices1[t, mc] <- pull1
+      prices2[t, mc] <- pull2
+      #collect profits
+      profits1[t, mc] <- reward1
+      profits2[t, mc] <- reward2
+    }
+  }
+  #save prices and profits in the environment
+  prices1 <<- prices1
+  prices2 <<- prices2
+  profits1 <<- profits1
+  profits2 <<- profits2
+}
+```
+
+We let the firms choose from 10 prices between 0.1 and 1.
+```{r P}
+#available prices
+P <- seq(0.1, 1, 0.1)
+```
+
+We set $\alpha=\beta=5$ and run 1000 experiments with 10000 periods each.
+```{r context}
+simulate(P = P, alpha = 5, beta = 5, N = 10000, MC = 1000)
+```
+
+We summarize the results from the simulation using the following figure. The left panel depicts the development of mean price across experiments and 10 and 90 percentiles. The right panel shows the histogram of all prices in the simulation pooled from all periods and experiments.
+```{r figure, warning=FALSE}
+plot_sim <- function(prices1, prices2, P){
+  #collects prices for both firms
+  PP <- data.frame(price1 = c(prices1), price2 = c(prices2))
+  #wide to long forma (experiments not separate columns anymore)
+  PP <- PP %>%
+    gather(price1, price2, key = "firm", value = "price")
+  #add iteration number
+  PP$iter <- rep(1:nrow(prices1), 2*ncol(prices1))
+  
+  #calculate mean and the quantiles
+  PPP <- PP %>% group_by(firm, iter) %>%
+    summarize(mean = mean(price),
+              upper = quantile(price, 0.9),
+              lower = quantile(price, 0.1))
+  PPP$type <- "Gemiddelde"
+  PPP$type[(nrow(prices1)/2 + 1):nrow(prices1)] <- "10/90% kwantielen"
+  
+  #calculate frequency share for the histogram
+  PP <- PP %>% group_by(firm, price) %>%
+    summarize(share = length(iter)/(nrow(prices1)*ncol(prices1)))
+  #left panel
+  g1 <<- ggplot() +
+    #mean prices
+    geom_line(data = PPP, aes(x = iter, y = mean, color = firm)) +
+    #90-percent quantile smoothed to prevent jumps
+    geom_smooth(data = PPP, aes(x = iter, y = upper, color = firm),
+                method = "loess", span = 0.1, lty = 2, se = FALSE) +
+    #10-percent quantile smoothed to prevent jumps
+    geom_smooth(data = PPP, aes(x = iter, y = lower, color = firm),
+                method = "loess", span = 0.1, lty = 2, se = FALSE) +
+    #add invisible line to create legend based on linetype
+    geom_line(data = PPP, aes(x = iter, y = lower, lty = type), color = NA) +
+    #choose color scale and labels
+    scale_color_hue(name = "Prijszetter", labels = c("Bedrijf 1", "Bedrijf 2")) +
+    #choose linetype scale labels
+    scale_linetype_manual(name = "", values = c(1, 2),
+                          labels = c("Gemiddelde", "10/90% kwantielen (gladgemaakt)")) +
+    #choose ticks on the y-axis
+    scale_y_continuous(
+      breaks = seq(min(P), max(P), 0.1),
+      limits = c(min(P), max(P))
+    ) +
+    #add horizontal line for the collusive price
+    geom_hline(aes(yintercept = 0.9), color = "red", lty = 2) +
+    #add horizontal line for the Nash-Bertrand price
+    geom_hline(aes(yintercept = 0.4), color = "green", lty = 2) +
+    #adjust legend
+    guides(
+      #color first, squares
+      color = guide_legend(
+        override.aes = list(size = 7, shape = 15),
+        order = 1
+      ),
+      #adjust keywidth, color and size for linetype
+      linetype = guide_legend(
+        override.aes = list(color = "black", size = 1),
+        keywidth = 3
+      )
+    ) +
+    #black and white theme
+    theme_bw() +
+    #adjust some additioal theme 
+    theme(
+      legend.key = element_blank(), #no key background
+      legend.position = "bottom", #legend under figure
+      legend.box = "horizontal", #color and linetype next to each other
+      legend.direction = "vertical" #keys below each other
+    ) +
+    #adjust titles
+    labs(
+      y = "Prijs",
+      x = "Periode",
+      title = "Prijsontwikkeling"
+    )
+  
+  #right panel
+  g2 <<- ggplot(PP) +
+    #histogram
+    geom_bar(aes(x = price, y = share, fill = firm), position = "dodge", stat = "identity") +
+    #bar for each price
+    scale_x_continuous(
+      breaks = seq(min(P), max(P), 0.1)
+    ) +
+    #vertical line for collusive price
+    geom_vline(aes(xintercept = 0.9), color = "red", lty = 2) +
+    #vertical line for Nash-Bertrand price
+    geom_vline(aes(xintercept = 0.4), color = "green", lty = 2) +
+    #adjust titles
+    labs(
+      y = "Aandeel waarnemingen",
+      x = "Prijs",
+      title = "Histogram prijzen"
+    ) +
+    #black and white theme
+    theme_bw()
+}
+#save function
+save(plot_sim, file = "plot.RData")
+```
+```{r leg, warning=FALSE, results='hide'}
+#generate panels
+plot_sim(prices1, prices2, P)
+#construct left panel
+tmp <- ggplot_gtable(ggplot_build(g1))
+#identify element containing legend
+leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+#extract legend
+legend <- tmp$grobs[[leg]]
+```
+```{r fig, fig.height=3.8, fig.width=7, results='hide'}
+#arrange left and right panel with common legend underneath
+png(filename = "Fig5.png", width = 1200, height = 650, pointsize = 12, res = 150)
+grid.arrange(arrangeGrob(g1 + theme(legend.position = "none"),
+                         g2 + theme(legend.position = "none"), nrow = 1),
+             legend, nrow = 2, heights = c(10, 2))
+dev.off()
+```
+![](Fig5.png)
+
+We can see that the algorithms converge to prices close to the optimal collusive outcomes in a significant number of cases. It is remarkable that without any knowledge about the environment the firms are able to coordinate on theoretically optimal outcomes.
+
+
+Next, we run an analogical simulation with a limited set of prices, namely 0.3, 0.4 (Nash) and 0.5. This simulation test whether a limited choice set leads to a fast converge to a higher price (as we expect).
+```{r small, fig.height=3.8, fig.width=7, warning=FALSE}
+simulate(P = c(0.3, 0.4, 0.5), alpha = 5, beta = 5, N = 10000, MC = 1000)
+```
+```{r figsmall}
+plot_sim_small <- function(prices1, prices2, P){
+  #collects prices for both firms
+  PP <- data.frame(price1 = c(prices1), price2 = c(prices2))
+  #wide to long forma (experiments not separate columns anymore)
+  PP <- PP %>%
+    gather(price1, price2, key = "firm", value = "price")
+  #add iteration number
+  PP$iter <- rep(1:nrow(prices1), 2*ncol(prices1))
+  
+  #calculate mean and the quantiles
+  PPP <- PP %>% group_by(firm, iter) %>%
+    summarize(mean = mean(price),
+              upper = quantile(price, 0.9),
+              lower = quantile(price, 0.1))
+  PPP$type <- "Gemiddelde"
+  PPP$type[(nrow(prices1)/2 + 1):nrow(prices1)] <- "10/90% kwantielen"
+  
+  #calculate frequency share for the histogram
+  PP <- PP %>% group_by(firm, price) %>%
+    summarize(share = length(iter)/(nrow(prices1)*ncol(prices1)))
+  #left panel
+  g1 <<- ggplot() +
+    #mean prices smoothed to prevent jumps (only 3 prices)
+    geom_smooth(data = PPP, aes(x = iter, y = mean, color = firm),
+                method = "loess", span = 0.1, se = FALSE) +
+    #90-percent quantile smoothed to prevent jumps
+    geom_smooth(data = PPP, aes(x = iter, y = upper, color = firm),
+                method = "loess", span = 0.1, lty = 2, se = FALSE) +
+    #10-percent quantile smoothed to prevent jumps
+    geom_smooth(data = PPP, aes(x = iter, y = lower, color = firm),
+                method = "loess", span = 0.1, lty = 2, se = FALSE) +
+    #add invisible line to create legend based on linetype
+    geom_line(data = PPP, aes(x = iter, y = lower, lty = type), color = NA) +
+    #choose color scale and labels
+    scale_color_hue(name = "Prijszetter", labels = c("Bedrijf 1", "Bedrijf 2")) +
+    #choose linetype scale labels
+    scale_linetype_manual(name = "", values = c(1, 2),
+                          labels = c("Gemiddelde (gladgemaakt)", "10/90% kwantielen (gladgemaakt)")) +
+    #choose ticks on the y-axis
+    scale_y_continuous(
+      breaks = seq(min(P), max(P), 0.1),
+      limits = c(min(P), max(P))
+    ) +
+    #add horizontal line for the Nash-Bertrand price
+    geom_hline(aes(yintercept = 0.4), color = "green", lty = 2) +
+    #adjust legend
+    guides(
+      #color first, squares
+      color = guide_legend(
+        override.aes = list(size = 7, shape = 15),
+        order = 1
+      ),
+      #adjust keywidth, color and size for linetype
+      linetype = guide_legend(
+        override.aes = list(color = "black", size = 1),
+        keywidth = 3
+      )
+    ) +
+    #black and white theme
+    theme_bw() +
+    #adjust some additioal theme 
+    theme(
+      legend.key = element_blank(), #no key background
+      legend.position = "bottom", #legend under figure
+      legend.box = "horizontal", #color and linetype next to each other
+      legend.direction = "vertical" #keys below each other
+    ) +
+    #adjust titles
+    labs(
+      y = "Prijs",
+      x = "Periode",
+      title = "Prijsontwikkeling"
+    )
+  
+  #right panel
+  g2 <<- ggplot(PP) +
+    #histogram
+    geom_bar(aes(x = price, y = share, fill = firm), position = "dodge", stat = "identity") +
+    #bar for each price
+    scale_x_continuous(
+      breaks = seq(min(P), max(P), 0.1)
+    ) +
+    #vertical line for Nash-Bertrand price
+    geom_vline(aes(xintercept = 0.4), color = "green", lty = 2) +
+    #adjust titles
+    labs(
+      y = "Aandeel waarnemingen",
+      x = "Prijs",
+      title = "Histogram prijzen"
+    ) +
+    #black and white theme
+    theme_bw()
+}
+#save function
+save(plot_sim, plot_sim_small, file = "plot.RData")
+```
+```{r leg2, warning=FALSE, results='hide'}
+#generate panels
+plot_sim_small(prices1, prices2, c(0.3, 0.4, 0.5))
+  
+#construct left panel
+tmp <- ggplot_gtable(ggplot_build(g1))
+#identify element containing legend
+leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+#extract legend
+legend <- tmp$grobs[[leg]]
+```
+```{r fig2, fig.height=3.8, fig.width=7, results='hide'} 
+png(filename = "Fig_extra1.png", width = 1200, height = 650, pointsize = 12, res = 150)
+#arrange left and right panel with common legend underneath
+grid.arrange(arrangeGrob(g1 + theme(legend.position="none"),
+                         g2 + theme(legend.position="none"), nrow = 1),
+             legend, nrow=2, heights=c(10, 2))
+```
+
+![](Fig_extra1.png)
+
+We will also run the simulations for a setting with three competitors.
+
+In order to do so, we adjust the function carrying out the simulation.
+```{r ucb3}
+simulate_three <- function(P, alpha, beta, N, MC){
+  #collect prices
+  prices1 <- prices2 <- prices3 <- matrix(rep(NA, N*MC), N, MC)
+  profits1 <- profits2 <- profits3 <- matrix(rep(NA, N*MC), N, MC)
+  #loop over experiments
+  for (mc in 1:MC){
+    #sum of rewards
+    sum_rewards1 <- sum_rewards2 <- sum_rewards3 <- matrix(rep(0, length(P)))
+    #sum of squared rewards
+    sum_rewards_sq1 <- sum_rewards_sq2 <- sum_rewards_sq3 <- matrix(rep(0, length(P)))
+    #number of times each arm pulled
+    Np1 <- Np2 <- Np3 <- matrix(rep(0, length(P)))
+    #initialize
+    pull1 <- sample(P, length(P))
+    pull2 <- sample(P, length(P))
+    pull3 <- sample(P, length(P))
+    for (t in 1:length(P)){
+      #calculate profit
+      denom <- 1 + exp(alpha - beta * pull1[t]) + exp(alpha - beta * pull2[t]) + exp(alpha - beta * pull3[t])
+      reward1 <- pull1[t]*exp(alpha - beta * pull1[t])/denom
+      reward2 <- pull2[t]*exp(alpha - beta * pull2[t])/denom
+      reward3 <- pull3[t]*exp(alpha - beta * pull3[t])/denom
+      #sum of the profits per arm
+      sum_rewards1[P == pull1[t]] <- sum_rewards1[P == pull1[t]] + reward1
+      sum_rewards2[P == pull2[t]] <- sum_rewards2[P == pull2[t]] + reward2
+      sum_rewards3[P == pull3[t]] <- sum_rewards3[P == pull3[t]] + reward3
+      #sum of squared profits per arm
+      sum_rewards_sq1[P == pull1[t]] <- sum_rewards_sq1[P == pull1[t]] + reward1^2
+      sum_rewards_sq2[P == pull2[t]] <- sum_rewards_sq2[P == pull2[t]] + reward2^2
+      sum_rewards_sq3[P == pull3[t]] <- sum_rewards_sq3[P == pull3[t]] + reward3^2
+      #number of pulls per arm
+      Np1[P == pull1[t]] <- Np1[P == pull1[t]] + 1
+      Np2[P == pull2[t]] <- Np2[P == pull2[t]] + 1
+      Np3[P == pull3[t]] <- Np3[P == pull3[t]] + 1
+    }
+    #loop over time periods
+    for (t in 1:N){
+      #choose arm with highest index value
+      pull1 <- P[pull_arm(sum_rewards1, sum_rewards_sq1, Np1, t + length(P))]
+      pull2 <- P[pull_arm(sum_rewards2, sum_rewards_sq2, Np2, t + length(P))]
+      pull3 <- P[pull_arm(sum_rewards3, sum_rewards_sq3, Np3, t + length(P))]
+      #calculate rewards
+      denom <- 1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2) + exp(alpha - beta * pull3)
+      reward1 <- pull1*exp(alpha - beta * pull1)/denom
+      reward2 <- pull2*exp(alpha - beta * pull2)/denom
+      reward3 <- pull3*exp(alpha - beta * pull3)/denom
+      #sum of profits per arm
+      sum_rewards1[P == pull1] <- sum_rewards1[P == pull1] + reward1
+      sum_rewards2[P == pull2] <- sum_rewards2[P == pull2] + reward2
+      sum_rewards3[P == pull3] <- sum_rewards3[P == pull3] + reward3
+      #sum of squared profits per arm
+      sum_rewards_sq1[P == pull1] <- sum_rewards_sq1[P == pull1] + reward1^2
+      sum_rewards_sq2[P == pull2] <- sum_rewards_sq2[P == pull2] + reward2^2
+      sum_rewards_sq3[P == pull3] <- sum_rewards_sq3[P == pull3] + reward3^2
+      #number of pulls per arm
+      Np1[P == pull1] <- Np1[P == pull1] + 1
+      Np2[P == pull2] <- Np2[P == pull2] + 1
+      Np3[P == pull3] <- Np3[P == pull3] + 1
+      #collect prices
+      prices1[t, mc] <- pull1
+      prices2[t, mc] <- pull2
+      prices3[t, mc] <- pull3
+      #collect profits
+      profits1[t, mc] <- reward1
+      profits2[t, mc] <- reward2
+      profits3[t, mc] <- reward3
+    }
+  }
+  #save results in environment
+  prices1 <<- prices1
+  prices2 <<- prices2
+  prices3 <<- prices3
+  profits1 <<- profits1
+  profits2 <<- profits2
+  profits3 <<- profits3
+}
+```
+
+We run 1000 experiments of 10000 periods.
+```{r sim3}
+simulate_three(P = P, alpha = 5, beta = 5, N = 10000, MC = 1000)
+```
+
+We visualise the results in a way analogical the earlier simulations. Note that the Nash equilibrium is 0.3 with three competitors.
+```{r plot3, results='hide'}
+#collect prices in data.frame
+PP <- data.frame(price1 = c(prices1), price2 = c(prices2), price3 = c(prices3))
+#long format
+PP <- PP %>%
+  gather(price1, price2, price3, key = "firm", value = "price")
+#add iteration number
+PP$iter <- rep(1:nrow(prices1), 3*ncol(prices1))
+#calculate mean and quantiles
+PPP <- PP %>% group_by(firm, iter) %>%
+  summarize(mean = mean(price),
+            upper = quantile(price, 0.9),
+            lower = quantile(price, 0.1))
+#label the statistic
+PPP$type <- "Average"
+PPP$type[(nrow(prices1)/2 + 1):nrow(prices1)] <- "10/90% quantiles"
+#calculate shares of iterations per arm for the histogram
+PP <- PP %>% group_by(firm, price) %>%
+  summarize(share = length(iter)/(nrow(prices1)*ncol(prices1)))
+
+#left panel
+g1 <- ggplot() +
+  #line for the mean
+  geom_line(data = PPP, aes(x = iter, y = mean, color = firm)) +
+  #loess smooth for the quantiles
+  geom_smooth(data = PPP, aes(x = iter, y = upper, color = firm),
+              method = "loess", span = 0.1, lty = 2, se = FALSE) +
+  geom_smooth(data = PPP, aes(x = iter, y = lower, color = firm),
+              method = "loess", span = 0.1, lty = 2, se = FALSE) +
+  #invisible line for the legend (statistic)
+  geom_line(data = PPP, aes(x = iter, y = lower, lty = type), color = NA) +
+  #color palette
+  scale_color_hue(name = "Prijszetter", labels = c("Bedrijf 1", "Bedrijf 2", "Bedrijf 3")) +
+  #linetypes for legend
+  scale_linetype_manual(name = "", values = c(1, 2),
+                        labels = c("Gemiddelde", "10/90% kwantielen (gladgemaakt)")) +
+  #tickmarks y-axis
+  scale_y_continuous(
+    breaks = seq(0.1, 1, 0.1),
+    limits = c(0, 1)
+  ) +
+  #collusive price
+  geom_hline(aes(yintercept = 0.9), color = "red", lty = 2) +
+  #competitive price
+  geom_hline(aes(yintercept = 0.3), color = "green", lty = 2) +
+  #adjust legend
+  guides(
+    color = guide_legend(
+      #squares
+      override.aes = list(size = 7, shape = 15),
+      order = 1
+    ),
+    linetype = guide_legend(
+      override.aes = list(color = "black", size = 1),
+      keywidth = 3
+    )
+  ) + theme_bw() +
+  theme(
+    legend.key = element_blank(),
+    legend.position = "bottom", #below figure
+    legend.box = "horizontal", #legenda's naast elkaar
+    legend.direction = "vertical" #waarden onder elkaar
+  ) +
+  #labels
+  labs(
+    y = "Prijs",
+    x = "Periode",
+    title = "Prijsontwikkeling"
+  )
+
+#right panel (histogram)
+g2 <- ggplot(PP) +
+  #add bars
+  geom_bar(aes(x = price, y = share, fill = firm), position = "dodge", stat = "identity") +
+  #adjust tick-marks x-axis
+  scale_x_continuous(
+    breaks = seq(0.1, 1, 0.1),
+    limits = c(0, 1)
+  ) +
+  #collusive price
+  geom_vline(aes(xintercept = 0.9), color = "red", lty = 2) +
+  #competitive price
+  geom_vline(aes(xintercept = 0.3), color = "green", lty = 2) +
+  #labels
+  labs(
+    y = "Aandeel waarnemingen",
+    x = "Prijs",
+    title = "Histogram prijzen"
+  ) +
+  #black and white theme
+  theme_bw()
+
+#construct left panel
+tmp <- ggplot_gtable(ggplot_build(g1))
+#identify element containing legend
+leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+#extract legend
+legend <- tmp$grobs[[leg]]
+```
+
+```{r fig3}
+png(filename="Fig_extra2.png", width=1200, height=700,
+    pointsize = 12, res = 150)
+#arrange left and right panel with common legend below
+grid.arrange(arrangeGrob(g1 + theme(legend.position="none"),
+                         g2 + theme(legend.position="none"), nrow = 1),
+             legend, nrow=2, heights=c(10, 3))
+dev.off()
+```
+![](Fig_extra2.png)

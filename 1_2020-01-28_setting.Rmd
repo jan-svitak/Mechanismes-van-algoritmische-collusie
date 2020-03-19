@@ -1,0 +1,208 @@
+---
+title: "Simulation setting"
+author: "Jan Svitak, Rob van der Noll"
+date: "January 28, 2020"
+output:
+  html_notebook:
+    highlight: tango
+    theme: cerulean
+    self_contained: yes
+    toc: yes
+---
+```{r packages, echo=FALSE, results='hide', warning=FALSE}
+library(ggplot2)
+library(ggalt)
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(rsvg)
+```
+
+## The simulation environment
+In this notebook we present the simulation setting we use to illustrate how the mechanisms built into the selflearning algorithms could facilitate coordination on supra-competitive prices. We assume a market with two competitors offering two heterogenous but substitutable products with zero costs competing simultaneously on prices. The demand for both products follows the logit specification:
+$$\log\left(s_i\right)-\log\left(1-s_i-s_j\right)=\alpha_i-\beta_i p_i$$
+where $s_i$ is a volume share for firm $i$. The 'market' consists of the two goods of firms 1 and 2 and an outside good.
+
+We set $\alpha_1=\alpha_2=\beta_1=\beta_2=5$ and let the firms choose simultaneously from 10 discrete prices between 0 and 1.
+
+This allows us to calculate the profits for all combinations of prices for the two products.
+```{r profit, paged.print=TRUE}
+#set of available prices
+P <- seq(0.1, 1, 0.1)
+#all combinations of prices for the two competitors
+P_matrix <- data.frame(x1 = rep(P, each = length(P)),
+                       x2 = rep(P, length(P)))
+#profit for firm 2 based on the specified logit demand
+P_matrix$profit <- P_matrix$x2*exp(5 - 5*P_matrix$x2)/(1 + exp(5 - 5*P_matrix$x2) + exp(5 - 5*P_matrix$x1))
+```
+
+We can visualise the profits of Firm 2 for different combinations of prices and thereby, show what the best responses are.
+```{r fig4, fig.height=5.5, fig.width=7, results='hide'}
+#save as png
+png(filename="Fig4.png", width=900, height=700, pointsize = 12, res = 150)
+#start a ggplot
+ggplot() +
+  #create tiles for all combinations of prices
+  #let the tiles' colour vary with profit
+  geom_tile(data = P_matrix, aes(x = x2, y = x1, fill = profit)) +
+  #specify the colour palette
+  scale_fill_distiller(palette = "RdYlBu") +
+  #add an invisible point (shape = NA) to add a description in the legend
+  geom_point(data = data.frame(x = 1, y = 1, t = "Optimale reactie"), aes(x = x, y = y, color = t), shape = NA) +
+  #specify tickmarks and title of y-axis
+  scale_y_continuous(
+    name = "Prijs van concurrent",
+    breaks = seq(0.1, 1, 0.1),
+    expand = c(0, 0)
+  ) +
+  scale_x_continuous(
+    name = "Beschikbare acties",
+    breaks = seq(0.1, 1, 0.1),
+    expand = c(0, 0)
+  ) +
+  #mark the optimal reactions
+  geom_encircle(data = data.frame(x1 = rep(c(0.99, 1.01), 2),
+                                  x2 = c(rep(0.69, 2), rep(0.71, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.89, 0.91), 2),
+                                  x2 = c(rep(0.59, 2), rep(0.61, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.79, 0.81), 2),
+                                  x2 = c(rep(0.59, 2), rep(0.61, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.69, 0.71), 2),
+                                  x2 = c(rep(0.49, 2), rep(0.51, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.59, 0.61), 2),
+                                  x2 = c(rep(0.49, 2), rep(0.51, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.49, 0.51), 2),
+                                  x2 = c(rep(0.39, 2), rep(0.41, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.39, 0.41), 2),
+                                  x2 = c(rep(0.39, 2), rep(0.41, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.29, 0.31), 2),
+                                  x2 = c(rep(0.39, 2), rep(0.41, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.19, 0.21), 2),
+                                  x2 = c(rep(0.29, 2), rep(0.31, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.09, 0.11), 2),
+                                  x2 = c(rep(0.29, 2), rep(0.31, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  #adjust panel background and legend key background
+  theme(panel.background = element_rect(fill = NA),
+        legend.key = element_blank()) +
+  #set titles for colour legend and the whole figure
+  labs(fill = "Winst", color = "") +
+  #adjust legend
+  guides(
+    #create legend key for optimal reactions
+    color = guide_legend(
+      override.aes = list(size = 10, stroke = 2, shape = 0, color = "green2")
+    ),
+    #put fill to the top of the legend
+    fill = guide_colourbar(order = 1)
+  ) +
+  #denote Nash equilibrium
+  annotate("text", x = 0.4, y = 0.405, label = "Competitieve prijs", size = 3) +
+  #denote Monopoly price
+  annotate("text", x = 0.9, y = 0.905, label = "Collusieprijs", size = 3)
+dev.off()
+```
+![](Fig4.png)
+
+## Types of learning algorithms
+Furthermore, we present schematic descriptions of the types of selflearning algorithms we use.
+
+The simplest algorithms solve the multi-armed bandit problem, where an optimal choice needs to be identified from a set of alternatives. Only the own choices and own reward is observed by these algorithms.
+
+```{r MAB, results='hide'}
+Fig1 <- grViz("
+digraph boxes_and_circles {
+
+  # a 'graph' statement
+  graph [overlap = true, fontsize = 10]
+
+  # several 'node' statements
+  node [shape = box,
+        fontname = Helvetica]
+  Action; Reward
+
+  # several 'edge' statements
+  Action->Reward [minlen = 2]
+  subgraph {
+    rank = same; Action; Reward;
+  }
+}
+")
+capture.output(rsvg_png(charToRaw(export_svg(Fig1)), 'Fig1.png', width = 862, height = 250))
+```
+![](Fig1.png){ width=55% }
+
+
+More advanced algorithms are able to recognize that the reward can also depend on the context. If reward is partly dependent on context (e.g. prices of competitor), the algorithms solve a contextual bandit problem. The algorithms now need to identify a optimal choice for each state of the world (context).
+```{r context, results='hide'}
+Fig2 <- grViz("
+digraph boxes_and_circles {
+
+  # a 'graph' statement
+  graph [overlap = true, fontsize = 10]
+
+  # several 'node' statements
+  node [shape = box,
+        fontname = Helvetica]
+  State; Action; Reward
+
+  # several 'edge' statements
+  Action->Reward [minlen = 2]
+  State->Action [minlen = 2]
+  State->Reward
+  subgraph {
+    rank = same; State; Action; Reward;
+  }
+}
+")
+capture.output(rsvg_png(charToRaw(export_svg(Fig2)), 'Fig2.png', width = 862, height = 250))
+```
+![](Fig2.png)
+
+
+We can go one extra step further and allow the actions of the actors to influence the environment. In the case of a price-setting game, we can imagine that a price set in period $t$ can influence competitor's strategy in period $t+1$ and thereby also rewards for both players in period $t+1$. Actors in this setting solve the reinforcement learning problem.
+```{r reinforcement, results='hide'}
+Fig3 <- grViz("
+digraph boxes_and_circles {
+      
+      # a 'graph' statement
+      graph [overlap = true, fontsize = 10]
+      
+      # several 'node' statements
+      node [shape = box,
+      fontname = Helvetica]
+      State; Action; Reward
+      
+      # several 'edge' statements
+      Action->Reward [minlen = 2]
+      State->Action
+      State->Reward
+      Action->State [minlen = 2]
+      subgraph {
+      rank = same; State; Action; Reward;
+      }
+      }
+      ")
+capture.output(rsvg_png(charToRaw(export_svg(Fig3)), 'Fig3.png', width = 862, height = 250))
+```
+
+![](Fig3.png)
+

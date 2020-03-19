@@ -1,0 +1,610 @@
+---
+title: "Q-learning"
+author: "Jan Sviták, Rob van der Noll"
+date: "January 28, 2020"
+output:
+  html_notebook:
+    highlight: tango
+    theme: cerulean
+    self_contained: yes
+    toc: yes
+---
+```{r packages, echo=FALSE, results='hide', warning=FALSE}
+library(tidyverse)
+library(gridExtra)
+library(ggalt)
+set.seed(666)
+```
+
+
+In this notebook we present the simulations with Q-learning algorithms solving the full reinforcement learning problem.
+![](Fig3.png)
+
+## Q-learning
+
+As is the case with all the previously presented algorithms also Q-learning algorithms will estimate expected reward for each available option given the observed state. This expected reward is referred to as a Q-value.
+
+The Q-learning algorithms are strategic in the sense that they take into account what the consequences of their actions are for future states and rewards. The goal is to maximise the net present value of the sum of profits over the duration of the game. This optimalization problem is solved using a Bellman equation which uses the logic of backwards induction and leads to a Q-value for state $s$ and action $a$ defined as:
+
+$$Q(s,a)=\mathbb{E}[\pi | s, a] + \gamma \mathbb{E}[\max_a Q(s', a)|s, a]$$
+where $\pi$ is the profit for the state $s$ and action $a$, $\gamma$ is the discount factor and $s'$ is the state of the world in the following period.
+
+The Q-value is estimated iteratively as follows:
+
+$$Q'(s_t,a_t) = (1-\alpha)Q(s_t,a_t)+\alpha \left(\pi_t+\gamma \max_a Q(s_{t+1}, a)\right)$$
+
+where $\alpha$ determines the learning rate. High alpha means that recently observed profits has a large effect on the updated Q-value.
+
+To facilitate exploration, we use an $\epsilon$-greedy strategy and let the firms choose a price randomly with probability $e^{-0.00001t}$. The exploration probability decreases with time, so the change of choosing a random price is approximately 99% after 1000 periods and 13% after 200000 periods. We initialise the Q-tables with the actual profits for given combination of prices so the starting strategies would lead the firm to the Nash equilibrium. The initial state is a random draw from the set of prices for both firms.
+
+
+We proceed by writing the function carrying out the simulation:
+```{r sim}
+#inputs of the function are:
+#   vector of available prices (P),
+#   the intercept of the logit model (alpha),
+#   the price sensitivity parameter of the logit model (beta),
+#   the discount factor (gamma),
+#   the learning rate (lr).
+#   number of iterations in one experiment (N).
+#   number of experiments (MC)
+simulate <- function(P, alpha, beta, gamma, lr, N, MC){
+  #collect prices
+  prices1 <- matrix(rep(NA, N*MC), N, MC)
+  prices2 <- matrix(rep(NA, N*MC), N, MC)
+  #collect profits
+  profits1 <- matrix(rep(NA, N*MC), N, MC)
+  profits2 <- matrix(rep(NA, N*MC), N, MC)
+  #collect Q-tables
+  Q1list <- Q2list <- list()
+  #number of available prices
+  l <- length(P)
+  #loop over experiments
+  for (mc in 1:MC){
+    #initialize
+    #all combinations of prices
+    P_matrix <- data.frame(x1 = rep(P, each = l^2),
+                                       x2 = rep(P, l^2))
+    #Q-tables correspond to the associated profits
+    Q1 <- Q2 <- matrix(P_matrix$x2*exp(alpha - beta*P_matrix$x2)/
+                         (1 + exp(alpha - beta*P_matrix$x2) + exp(alpha - beta*P_matrix$x1)), l^2, l, byrow = TRUE)
+    #random draw for both firms
+    pull1 <- sample(P, 1)
+    pull2 <- sample(P, 1)
+    #collect prices
+    prices1[1, mc] <- pull1
+    prices2[1, mc] <- pull2
+    #collect profits
+    profits1[1, mc] <- pull1*exp(alpha - beta * pull1)/
+      (1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2))
+    profits2[1, mc] <- pull2*exp(alpha - beta * pull2)/
+      (1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2))
+    #loop over periods
+    for (t in 2:N){
+      #observe the state of the world (prices in previous period)
+      s1 <- (which(P==pull2)-1)*l + which(P==pull1)
+      s2 <- (which(P==pull1)-1)*l + which(P==pull2)
+      #exploration probability
+      eps <- exp(-0.00001*t)
+      #exploration decision firm 1
+      exp1 <- sample(c(0, 1), prob = c(1 - eps, eps), 1)
+      #exploration decision firm 2
+      exp2 <- sample(c(0, 1), prob = c(1 - eps, eps), 1)
+      #explore (random price)
+      if(exp1){
+        pull1 <- sample(P, 1)
+      }
+      #choose best reponse to competitor's price in previous period
+      else{
+        pull1 <- P[which.max(Q1[s1,])]
+      }
+      #explore (random price)
+      if(exp2){
+        pull2 <- sample(P, 1)
+      }
+      #choose best reponse to competitor's price in previous period
+      else{
+        pull2 <- P[which.max(Q2[s2,])]
+      }
+      #action firm 1
+      a1 <- which(P==pull1)
+      #action firm 2
+      a2 <- which(P==pull2)
+      #collect prices
+      prices1[t, mc] <- pull1
+      prices2[t, mc] <- pull2
+      #collect profits
+      profits1[t, mc] <- pull1*exp(alpha - beta * pull1)/(1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2))
+      profits2[t, mc] <- pull2*exp(alpha - beta * pull2)/(1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2))
+      #update Q-tables
+      Q1[s1, a1] <- (1 - lr)*Q1[s1, a1] +
+        lr*(profits1[t, mc] + gamma*max(Q1[(which(P==pull2)-1)*l + which(P==pull1),]))
+      Q2[s2, a2] <- (1 - lr)*Q2[s2, a2] +
+        lr*(profits2[t, mc] + gamma*max(Q2[(which(P==pull1)-1)*l + which(P==pull2),]))
+    }
+    #collect resulting Q-tables
+    Q1list[[mc]] <- Q1
+    Q2list[[mc]] <- Q2
+  }
+  #save results in the environment
+  prices1 <<- prices1
+  prices2 <<- prices2
+  profits1 <<- profits1
+  profits2 <<- profits2
+  Q1list <<- Q1list
+  Q2list <<- Q2list
+}
+```
+
+We run 100 experiments of 1500000 periods with learning rate of 0.05 and discount factor of 0.95.
+
+```{r run}
+#available prices
+P <- seq(0.1, 1, 0.1)
+#run
+simulate(P = P, alpha = 5, beta = 5, gamma = 0.95, lr = 0.05, N = 1500000, MC = 100)
+```
+
+
+
+## Simulation results
+
+Let's visualise the results from the simulations:
+```{r plot, warning=FALSE, results='hide'}
+#load function
+load("plot.RData")
+#generate panels (select every 100th period to speed up)
+plot_sim(prices1[seq(1, 1500000, 100),], prices2[seq(1, 1500000, 100),], P)
+#construct left panel
+tmp <- ggplot_gtable(ggplot_build(g1))
+#identify element containing legend
+leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+#extract legend
+legend <- tmp$grobs[[leg]]
+```
+
+```{r fig, results='hide'}
+#adjust the periods (due to selection of periods)
+g1 <- g1 + scale_x_continuous(labels = c(0, "500000", "1000000", 1500000))
+
+#arrange left and right panel with common legend underneath
+png(filename = "Fig10.png", width = 1200, height = 650, pointsize = 12, res = 150)
+grid.arrange(arrangeGrob(g1 + theme(legend.position = "none"),
+                         g2 + theme(legend.position = "none"), nrow = 1),
+             legend, nrow = 2, heights = c(10, 2))
+dev.off()
+```
+![](Fig10.png)
+
+
+We can see that the prices converge to prices above the competitive equilibrium (mostly 0.6 or 0.7). The results appear to be stable across experiments.
+
+We note that the number of iterations needed for convergence to the supra-competitive equilibrium large is. Calvano et al. (2019) suggest that the algorithms could be trained offline - i.e. in a simulation. The trained algorithm could then be deployed for price-setting in real markets. We explore the feasibility of this idea.
+
+First, we investigate whether the two algorithms in each experiment learn strategies that are similar. We will calculate correlation in firms' best response for each state of the world. A high correlation would indicate that the algorithms react the same way in identical situations. Low correlation shows, on the other hand, that the two algorithms behave differently.
+```{r cor}
+#vector of correlations (100 experiments)
+r <- rep(NA, 100)
+for(i in 1:100){
+  r[i] <- cor(P[apply(Q1list[[i]], 1, FUN = function(x) {which.max(x)})],
+              P[apply(Q2list[[i]], 1, FUN = function(x) {which.max(x)})])
+}
+#average correlation
+mean(r)
+```
+
+The average correlation is 0.17 which seems rather low. The histogram below confirms that the correlations are low in general across experiments.
+```{r hist, warning=FALSE}
+#plot histogram of correlations
+ggplot(data = data.frame(r = r)) +
+  #bars as counts divided by 100 (number of experiments)
+  geom_bar(aes(x = r, y = ..count../100), stat = "bin", fill = "white", colour = "black") +
+  #labels
+  labs(x = "Correlatie tussen optimale reacties van Bedrijven 1 en 2",
+       y = "Aandeel experimenten") +
+  #black and white theme
+  theme_bw()
+```
+
+The low correlations mean that the equilibria are reached through complementary strategies rather than similar ones. Therefore, it seems difficult to decide which of the two different strategies resulting from the simulation to use for real world price-setting.
+
+## Example
+We will further illustrate the way Q-learning algorithms reach the equilibrium with an example. We take the results from one concrete experiment and look at the resulting Q-tables. In this experiment, the firms converge to the price of 0.5. Hence, we will plot the parts of the Q-tables corresponding to prices between 0.4 and 0.6 to show how the firms deviate from the Nash equilibrium and arrive at a stable outcome of 0.6.
+
+We start with a Q-table of Firm 1:
+```{r example1}
+#prepare labels for part of the Q-tabel corresponding to prices 0.4, 0.5, 0.6
+x_label <- paste(rep(c(0.4, 0.5, 0.6), 3))
+x_label[c(2, 5, 8)] <- paste0("p2: ", c(0.4, 0.5, 0.6), ",  p1: ", x_label[c(2, 5, 8)])
+
+#Firm 1
+g1 <- ggplot() +
+  #color corresponding to Q-value
+  geom_tile(data = reshape2::melt(Q1list[[4]][rep(4:6, 3)+rep(3:5, each = 3)*10, 4:6]),
+            aes(x = Var2, y = Var1, fill = value)) +
+  #invisible point to add optimal reaction to legend
+  geom_point(data = data.frame(x = 1, y = 1, t = "Optimale reactie"), aes(x = x, y = y, color = t), shape = NA) +
+  #color palette
+  scale_fill_distiller(name = "Q-waarde", palette = "RdYlBu", limits = c(4.47, 5.62)) +
+  #labels for y-axis (states of the world)
+  scale_y_continuous(name = "Geobserveerde prijzen (vorige periode)",
+                     breaks = 1:9, labels = x_label,
+                     expand = c(0, 0)) +
+  #labels for x axis (available prices)
+  scale_x_continuous(name = "Acties Bedrijf 1",
+                     breaks = 1:3, labels = seq(0.4, 0.6, 0.1),
+                     expand = c(0.01, 0)) +
+  #horizontal lines dividing the Q-table according to competitor's prices
+  geom_hline(yintercept = 0.5) +
+  geom_hline(yintercept = 3.5) +
+  geom_hline(yintercept = 6.5) +
+  geom_hline(yintercept = 9.5) +
+  #highlight optimal reactions
+  geom_encircle(data = data.frame(x1 = rep(c(0.62, 1.38), 2),
+                                  x2 = c(rep(0.65, 2), rep(1.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(1.62, 2.38), 2),
+                                  x2 = c(rep(2.65, 2), rep(3.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(2.62, 3.38), 2),
+                                  x2 = c(rep(0.65, 2), rep(1.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(3.62, 4.38), 2),
+                                  x2 = c(rep(1.65, 2), rep(2.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(4.62, 5.38), 2),
+                                  x2 = c(rep(1.65, 2), rep(2.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(5.62, 6.38), 2),
+                                  x2 = c(rep(1.65, 2), rep(2.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(6.62, 7.38), 2),
+                                  x2 = c(rep(1.65, 2), rep(2.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(7.62, 8.38), 2),
+                                  x2 = c(rep(0.65, 2), rep(1.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(8.62, 9.38), 2),
+                                  x2 = c(rep(2.65, 2), rep(3.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  #adjust legend
+  guides(
+    #create legend key for optimal reactions
+    color = guide_legend(
+      override.aes = list(size = 10, stroke = 2, shape = 0, color = "green2")
+    ),
+    fill = guide_colourbar(order = 1)
+  ) + 
+  #adjust panel background and legend key background
+  theme(
+    panel.background = element_rect(fill = NA),
+    legend.key = element_blank(),
+    #more space for labels on left side
+    axis.text.y = element_text(hjust = 1, margin=margin(0,0,0,4)),
+    axis.ticks.y = element_blank()
+  ) +
+  #no label for color
+  labs(color = "")
+```
+
+We proceed analogically with Firm 2:
+```{r example2}
+#prepare labels for part of the Q-tabel corresponding to prices 0.4, 0.5, 0.6
+x_label <- paste(rep(c(0.4, 0.5, 0.6), 3))
+x_label[c(2, 5, 8)] <- paste0("p1: ", c(0.4, 0.5, 0.6), ",  p2: ", x_label[c(2, 5, 8)])
+
+#Firm 2
+g2 <- ggplot() +
+  geom_tile(data = reshape2::melt(Q2list[[4]][rep(4:6, 3)+rep(3:5, each = 3)*10, 4:6]),
+            aes(x = Var2, y = Var1, fill = value)) +
+  #add invisible layer to add optimal reaction to legend
+  geom_point(data = data.frame(x = 1, y = 1, t = "Optimale reactie"), aes(x = x, y = y, color = t), shape = NA) +
+  #color palette
+  scale_fill_distiller(name = "Q-waarde", palette = "RdYlBu", limits = c(4.47, 5.62)) +
+  #labels y-axis
+  scale_y_continuous(name = "Geobserveerde prijzen (vorige periode)",
+                     breaks = 1:9, labels = x_label,
+                     expand = c(0, 0)) +
+  #labels x-axis
+  scale_x_continuous(name = "Actie bedrijf 2",
+                     breaks = 1:3, labels = seq(0.4, 0.6, 0.1),
+                     expand = c(0.01, 0)) +
+  #horizontal lines dividing the Q-table according to competitor's prices
+  geom_hline(yintercept = 0.5) +
+  geom_hline(yintercept = 3.5) +
+  geom_hline(yintercept = 6.5) +
+  geom_hline(yintercept = 9.5) +
+  #highlight optimal reactions
+  geom_encircle(data = data.frame(x1 = rep(c(0.62, 1.38), 2),
+                                  x2 = c(rep(1.65, 2), rep(2.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(1.62, 2.38), 2),
+                                  x2 = c(rep(0.65, 2), rep(1.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(2.62, 3.38), 2),
+                                  x2 = c(rep(0.65, 2), rep(1.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(3.62, 4.38), 2),
+                                  x2 = c(rep(2.65, 2), rep(3.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(4.62, 5.38), 2),
+                                  x2 = c(rep(2.65, 2), rep(3.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(5.62, 6.38), 2),
+                                  x2 = c(rep(1.65, 2), rep(2.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(6.62, 7.38), 2),
+                                  x2 = c(rep(2.65, 2), rep(3.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(7.62, 8.38), 2),
+                                  x2 = c(rep(0.65, 2), rep(1.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(8.62, 9.38), 2),
+                                  x2 = c(rep(2.65, 2), rep(3.35, 2))),
+                aes(x = x2, y = x1), color="green2", s_shape=0.9, size=2, expand = 0.05) +
+  #adjust legend
+  guides(
+    color = guide_legend(
+      override.aes = list(size = 10, stroke = 2, shape = 0, color = "green2")
+    ),
+    fill = guide_colourbar(order = 1)
+  ) + 
+  #blank background, no tick marks
+  theme(
+    panel.background = element_rect(fill = NA),
+    legend.key = element_blank(),
+    axis.text.y = element_text(hjust = 1, margin=margin(0,0,0,4)),
+    axis.ticks.y = element_blank()
+  ) +
+  labs(color = "")
+```
+
+We combine both panels in one figure.
+```{r fig11, results='hide', warning=FALSE}
+#construct left panel
+tmp <- ggplot_gtable(ggplot_build(g1))
+#identify element containing legend
+leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+#extract legend
+legend <- tmp$grobs[[leg]]
+```
+```{r png, results='hide', message=FALSE, warning=FALSE}
+#arrange left and right panel with common legend on the right
+png(filename="Fig11.png", width=1200, height=700,
+    pointsize = 12, res = 150)
+grid.arrange(arrangeGrob(g1 + theme(legend.position="none"),
+                         g2 + theme(legend.position="none"), nrow = 1),
+             legend, ncol=2, widths=c(20, 5))
+dev.off()
+```
+
+
+![](Fig11.png)
+
+We can see that the optimal reactions are quite different between the two firms. For example, in Nash Equilibrium, Firm 1 keeps charging 0.4, but Firm 2 increases the prices to 0.5.
+
+The above Q-tables lead to the following equilibrium path from the Nash equilibrium to the outcome with prices equal to 0.6. The strategies are, thus, in a way, complementary to each other.
+```{r path, results='hide'}
+#all possible combinations of prices
+P_matrix <- data.frame(x1 = rep(P, each = length(P)),
+                       x2 = rep(P, length(P)))
+#denominator of logit function
+denom <- 1 + exp(5 - 5*P_matrix$x2) + exp(5 - 5*P_matrix$x1)
+P_matrix$profit <- P_matrix$x2*exp(5 - 5*P_matrix$x2)/denom + P_matrix$x1*exp(5 - 5*P_matrix$x1)/denom
+
+#save as png
+png(filename="Fig12.png", width=900, height=700,
+    pointsize = 12, res = 150)
+ggplot() +
+  #color based on aggregate profits
+  geom_tile(data = P_matrix, aes(x = x2, y = x1, fill = profit)) +
+  #color palette
+  scale_fill_distiller(palette = "RdYlBu") +
+  #invisible layer to get visited states into legend
+  geom_point(data = data.frame(x = 1, y = 1, t = "Gehanteerde prijzen"),
+             aes(x = x, y = y, color = t), shape = NA) +
+  #label and tick marks y-axis
+  scale_y_continuous(
+    name = "Bedrijf 2",
+    breaks = seq(0.1, 1, 0.1),
+    expand = c(0, 0)
+  ) +
+  #label and tick marks y-axis
+  scale_x_continuous(
+    name = "Bedrijf 1",
+    breaks = seq(0.1, 1, 0.1),
+    expand = c(0, 0)
+  ) +
+  #highlight visited states
+  geom_encircle(data = data.frame(x1 = rep(c(0.39, 0.41), 2),
+                                  x2 = c(rep(0.39, 2), rep(0.41, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.49, 0.51), 2),
+                                  x2 = c(rep(0.39, 2), rep(0.41, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.39, 0.41), 2),
+                                  x2 = c(rep(0.49, 2), rep(0.51, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  geom_encircle(data = data.frame(x1 = rep(c(0.59, 0.61), 2),
+                                  x2 = c(rep(0.59, 2), rep(0.61, 2))),
+                aes(x = x2, y = x1),
+                color="green2", s_shape=0.9,size=3, expand = 0.05) +
+  #add the final feedback loop (transition)
+  geom_curve(aes(x = 0.62, xend = 0.58), y = 0.62, yend = 0.62, curvature = 4,
+               col = "white", size = 2, arrow = arrow(length = unit(0.2, "cm"))) +
+  geom_curve(aes(x = 0.62, xend = 0.58), y = 0.62, yend = 0.62, curvature = 4,
+               col = "black", size = 1, arrow = arrow(length = unit(0.2, "cm"))) +
+  #add transitions between states (black arrow over a thicker white arrow)
+  geom_segment(aes(x = 0.5, xend = 0.6), y = 0.4, yend = 0.6,
+               col = "white", size = 2, arrow = arrow(length = unit(0.2, "cm"))) +
+  geom_segment(aes(x = 0.5, xend = 0.6), y = 0.4, yend = 0.6,
+               col = "black", size = 1, arrow = arrow(length = unit(0.2, "cm"))) +
+  geom_segment(aes(x = 0.4, xend = 0.5), y = 0.5, yend = 0.4,
+               col = "white", size = 2, arrow = arrow(length = unit(0.2, "cm"))) +
+  geom_segment(aes(x = 0.4, xend = 0.5), y = 0.5, yend = 0.4,
+               col = "black", size = 1, arrow = arrow(length = unit(0.2, "cm"))) +
+  geom_segment(aes(x = 0.4, xend = 0.4), y = 0.41, yend = 0.5,
+               col = "white", size = 2, arrow = arrow(length = unit(0.2, "cm"))) +
+  geom_segment(aes(x = 0.4, xend = 0.4), y = 0.41, yend = 0.5,
+               col = "black", size = 1, arrow = arrow(length = unit(0.2, "cm"))) +
+  #blank background
+  theme(panel.background = element_rect(fill = NA),
+        legend.key = element_blank()) +
+  #adjust labels
+  labs(fill = "Gezamenlijke winst", color = "", title = "Voorbeeld van pad naar evenwicht") +
+  #adjust legend
+  guides(
+    color = guide_legend(
+      override.aes = list(size = 10, stroke = 2, shape = 0, color = "green2")
+    ),
+    fill = guide_colourbar(order = 1)
+  ) +
+  #annonate startpoint and outcome
+  annotate("text", x = 0.4, y = 0.405, label = "Competitieve evenwicht", size = 3) +
+  annotate("text", x = 0.6, y = 0.605, label = "Uitkomst", size = 3)
+dev.off()
+```
+
+
+![](Fig12.png)
+
+
+
+## Smaller choiceset
+
+Let's look how quick the convergence when we limit the choice set.
+
+We adjust the function carrying out the simulation (the exploration probability changes).
+```{r sim_small}
+#inputs of the function are:
+#   vector of available prices (P),
+#   the intercept of the logit model (alpha),
+#   the price sensitivity parameter of the logit model (beta),
+#   the discount factor (gamma),
+#   the learning rate (lr).
+#   number of iterations in one experiment (N).
+#   number of experiments (MC)
+simulate_small <- function(P, alpha, beta, gamma, lr, N, MC){
+  #collect prices
+  prices1 <- matrix(rep(NA, N*MC), N, MC)
+  prices2 <- matrix(rep(NA, N*MC), N, MC)
+  #collect profits
+  profits1 <- matrix(rep(NA, N*MC), N, MC)
+  profits2 <- matrix(rep(NA, N*MC), N, MC)
+  #collect Q-tables
+  Q1list <- Q2list <- list()
+  #number of available prices
+  l <- length(P)
+  #loop over experiments
+  for (mc in 1:MC){
+    #initialize
+    #all combinations of prices
+    P_matrix <- data.frame(x1 = rep(P, each = l^2),
+                                       x2 = rep(P, l^2))
+    #Q-tables correspond to the associated profits
+    Q1 <- Q2 <- matrix(P_matrix$x2*exp(alpha - beta*P_matrix$x2)/
+                         (1 + exp(alpha - beta*P_matrix$x2) + exp(alpha - beta*P_matrix$x1)), l^2, l, byrow = TRUE)
+    #random draw for both firms
+    pull1 <- sample(P, 1)
+    pull2 <- sample(P, 1)
+    #collect prices
+    prices1[1, mc] <- pull1
+    prices2[1, mc] <- pull2
+    #collect profits
+    profits1[1, mc] <- pull1*exp(alpha - beta * pull1)/
+      (1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2))
+    profits2[1, mc] <- pull2*exp(alpha - beta * pull2)/
+      (1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2))
+    #loop over periods
+    for (t in 2:N){
+      #observe the state of the world (prices in previous period)
+      s1 <- (which(P==pull2)-1)*l + which(P==pull1)
+      s2 <- (which(P==pull1)-1)*l + which(P==pull2)
+      #exploration probability
+      eps <- exp(-0.0005*t)
+      #exploration decision firm 1
+      exp1 <- sample(c(0, 1), prob = c(1 - eps, eps), 1)
+      #exploration decision firm 2
+      exp2 <- sample(c(0, 1), prob = c(1 - eps, eps), 1)
+      #explore (random price)
+      if(exp1){
+        pull1 <- sample(P, 1)
+      }
+      #choose best reponse to competitor's price in previous period
+      else{
+        pull1 <- P[which.max(Q1[s1,])]
+      }
+      #explore (random price)
+      if(exp2){
+        pull2 <- sample(P, 1)
+      }
+      #choose best reponse to competitor's price in previous period
+      else{
+        pull2 <- P[which.max(Q2[s2,])]
+      }
+      #action firm 1
+      a1 <- which(P==pull1)
+      #action firm 2
+      a2 <- which(P==pull2)
+      #collect prices
+      prices1[t, mc] <- pull1
+      prices2[t, mc] <- pull2
+      #collect profits
+      profits1[t, mc] <- pull1*exp(alpha - beta * pull1)/(1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2))
+      profits2[t, mc] <- pull2*exp(alpha - beta * pull2)/(1 + exp(alpha - beta * pull1) + exp(alpha - beta * pull2))
+      #update Q-tables
+      Q1[s1, a1] <- (1 - lr)*Q1[s1, a1] +
+        lr*(profits1[t, mc] + gamma*max(Q1[(which(P==pull2)-1)*l + which(P==pull1),]))
+      Q2[s2, a2] <- (1 - lr)*Q2[s2, a2] +
+        lr*(profits2[t, mc] + gamma*max(Q2[(which(P==pull1)-1)*l + which(P==pull2),]))
+    }
+    #collect resulting Q-tables
+    Q1list[[mc]] <- Q1
+    Q2list[[mc]] <- Q2
+  }
+  #save results in the environment
+  prices1 <<- prices1
+  prices2 <<- prices2
+  profits1 <<- profits1
+  profits2 <<- profits2
+  Q1list <<- Q1list
+  Q2list <<- Q2list
+}
+```
+
+We run 1000 experiments of 20000 periods with a learning rate of 0.5 and discount factor of 0.95.
+
+```{r run_s}
+#run
+simulate_small(P = c(0.3, 0.4, 0.5), alpha = 5, beta = 5, gamma = 0.95, lr = 0.5, N = 20000, MC = 100)
+```
+
+
+```{r leg2, warning=FALSE, results='hide'}
+#generate panels
+plot_sim_small(prices1, prices2, c(0.3, 0.4, 0.5))
+  
+#construct left panel
+tmp <- ggplot_gtable(ggplot_build(g1))
+#identify element containing legend
+leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+#extract legend
+legend <- tmp$grobs[[leg]]
+```
+```{r fig2, fig.height=3.8, fig.width=7, results='hide'} 
+png(filename = "Fig_extra3.png", width = 1200, height = 650, pointsize = 12, res = 150)
+#arrange left and right panel with common legend underneath
+grid.arrange(arrangeGrob(g1 + theme(legend.position="none"),
+                         g2 + theme(legend.position="none"), nrow = 1),
+             legend, nrow=2, heights=c(10, 2))
+```
+
+![](Fig_extra3.png)
+
+The convergence to the higher price is indeed much faster.
+
+
+
